@@ -78,6 +78,8 @@ parser.add_argument('--prior', type=float, default=0.2,
 parser.add_argument('--traj-size', type=int, default=2000)
 parser.add_argument('--ofolder', type=str, default='log')
 parser.add_argument('--ifolder', type=str, default='demonstrations')
+parser.add_argument('--save-interval', type=int, default=500, metavar='N',
+                    help='interval between networks savings')
 args = parser.parse_args()
 
 env = gym.make(args.env)
@@ -97,11 +99,13 @@ value_criterion = nn.MSELoss()
 disc_optimizer = optim.Adam(discriminator.parameters(), args.lr)
 value_optimizer = optim.Adam(value_net.parameters(), args.vf_lr)
 
+
 def select_action(state):
     state = torch.from_numpy(state).unsqueeze(0)
     action_mean, _, action_std = policy_net(Variable(state))
     action = torch.normal(action_mean, action_std)
     return action
+
 
 def update_params(batch):
     rewards = torch.Tensor(batch.reward).to(device)
@@ -110,9 +114,9 @@ def update_params(batch):
     states = torch.Tensor(batch.state).to(device)
     values = value_net(Variable(states))
 
-    returns = torch.Tensor(actions.size(0),1).to(device)
-    deltas = torch.Tensor(actions.size(0),1).to(device)
-    advantages = torch.Tensor(actions.size(0),1).to(device)
+    returns = torch.Tensor(actions.size(0), 1).to(device)
+    deltas = torch.Tensor(actions.size(0), 1).to(device)
+    advantages = torch.Tensor(actions.size(0), 1).to(device)
 
     prev_return = 0
     prev_value = 0
@@ -134,7 +138,7 @@ def update_params(batch):
         smp_idx = idx[i * batch_size: (i + 1) * batch_size]
         smp_states = states[smp_idx, :]
         smp_targets = targets[smp_idx, :]
-        
+
         value_optimizer.zero_grad()
         value_loss = value_criterion(value_net(Variable(smp_states)), smp_targets)
         value_loss.backward()
@@ -143,14 +147,14 @@ def update_params(batch):
     advantages = (advantages - advantages.mean()) / advantages.std()
 
     action_means, action_log_stds, action_stds = policy_net(Variable(states.cpu()))
-    fixed_log_prob = normal_log_density(Variable(actions.cpu()), action_means, action_log_stds, action_stds).data.clone()
+    fixed_log_prob = \
+        normal_log_density(Variable(actions.cpu()), action_means, action_log_stds, action_stds).data.clone()
 
     def get_loss():
         action_means, action_log_stds, action_stds = policy_net(Variable(states.cpu()))
         log_prob = normal_log_density(Variable(actions.cpu()), action_means, action_log_stds, action_stds)
         action_loss = -Variable(advantages.cpu()) * torch.exp(log_prob - Variable(fixed_log_prob))
         return action_loss.mean()
-
 
     def get_kl():
         mean1, log_std1, std1 = policy_net(Variable(states.cpu()))
@@ -163,6 +167,7 @@ def update_params(batch):
 
     trpo_step(policy_net, get_loss, get_kl, args.max_kl, args.damping)
 
+
 def expert_reward(states, actions):
     states = np.concatenate(states)
     actions = np.concatenate(actions)
@@ -174,7 +179,7 @@ def evaluate(episode):
     avg_reward = 0.0
     for _ in range(args.eval_epochs):
         state = env.reset()
-        for _ in range(10000): # Don't infinite loop while learning
+        for _ in range(10000):  # Don't infinite loop while learning
             state = torch.from_numpy(state).unsqueeze(0)
             action, _, _ = policy_net(Variable(state))
             action = action.data[0].numpy()
@@ -185,6 +190,9 @@ def evaluate(episode):
             state = next_state
     writer.log(episode, avg_reward / args.eval_epochs)
 
+
+# load expert data
+# each expert trajectory contains a state (size: num_inputs) and an action (size: num_action)
 plabel = ''
 try:
     expert_traj = np.load("./{}/{}_mixture.npy".format(args.ifolder, args.env))
@@ -195,19 +203,19 @@ except:
     print('Mixture demonstrations not loaded successfully.')
     assert False
 
+# choose experts according to args.traj_size
 idx = np.random.choice(expert_traj.shape[0], args.traj_size, replace=False)
 expert_traj = expert_traj[idx, :]
 expert_conf = expert_conf[idx, :]
 
-
 ##### semi-confidence learning #####
-num_label = int(args.prior * expert_conf.shape[0])
+num_label = int(args.prior * expert_conf.shape[0])  # number of data labeled with confidence
 
-p_idx = np.random.permutation(expert_traj.shape[0])
+p_idx = np.random.permutation(expert_traj.shape[0])  # index of labeled data
 expert_traj = expert_traj[p_idx, :]
 expert_conf = expert_conf[p_idx, :]
 
-if not args.only and args.weight:
+if not args.only and args.weight:  # train a probabilistic classifier
 
     labeled_traj = torch.Tensor(expert_traj[:num_label, :]).to(device)
     unlabeled_traj = torch.Tensor(expert_traj[num_label:, :]).to(device)
@@ -215,11 +223,12 @@ if not args.only and args.weight:
 
     classifier = Classifier(expert_traj.shape[1], 40).to(device)
     optim = optim.Adam(classifier.parameters(), 3e-4, amsgrad=True)
-    cu_loss = CULoss(expert_conf, beta=1-args.prior, non=True) 
+    cu_loss = CULoss(expert_conf, beta=1 - args.prior, non=True)
 
     batch = min(128, labeled_traj.shape[0])
     ubatch = int(batch / labeled_traj.shape[0] * unlabeled_traj.shape[0])
     iters = 25000
+    # iters = 1000
     for i in range(iters):
         l_idx = np.random.choice(labeled_traj.shape[0], batch)
         u_idx = np.random.choice(unlabeled_traj.shape[0], ubatch)
@@ -230,23 +239,25 @@ if not args.only and args.weight:
 
         optim.zero_grad()
         risk = cu_loss(smp_conf, labeled, unlabeled)
-        
+
         risk.backward()
         optim.step()
-       
+
         if i % 1000 == 0:
             print('iteration: {}\tcu loss: {:.3f}'.format(i, risk.data.item()))
 
     classifier = classifier.eval()
     expert_conf = torch.sigmoid(classifier(torch.Tensor(expert_traj).to(device))).detach().cpu().numpy()
     expert_conf[:num_label, :] = label.cpu().detach().numpy()
-elif args.only and args.weight:
+    torch.save(classifier, './networks/classifier_{}.pkl'.format(args.env))
+    print("classifier saved!")
+elif args.only and args.weight:  # only use labeled data
     expert_traj = expert_traj[:num_label, :]
     expert_conf = expert_conf[:num_label, :]
     if args.noconf:
         expert_conf = np.ones(expert_conf.shape)
 ###################################
-Z = expert_conf.mean()
+Z = expert_conf.mean()  # estimate the class prior
 if args.only:
     fname = 'olabel'
 else:
@@ -254,14 +265,15 @@ else:
 if args.noconf:
     fname = 'nc'
 
-writer = Writer(args.env, args.seed, args.weight, 'mixture', args.prior, args.traj_size, folder=args.ofolder, fname=fname, noise=args.noise)
+writer = Writer(args.env, args.seed, args.weight, 'mixture', args.prior, args.traj_size, folder=args.ofolder,
+                fname=fname, noise=args.noise)
 
 for i_episode in range(args.num_epochs):
     memory = Memory()
 
     num_steps = 0
     num_episodes = 0
-    
+
     reward_batch = []
     states = []
     actions = []
@@ -271,10 +283,9 @@ for i_episode in range(args.num_epochs):
 
     while num_steps < args.batch_size:
         state = env.reset()
-   
 
         reward_sum = 0
-        for t in range(10000): # Don't infinite loop while learning
+        for t in range(10000):  # Don't infinite loop while learning
             action = select_action(state)
             action = action.data[0].numpy()
             states.append(np.array([state]))
@@ -293,7 +304,7 @@ for i_episode in range(args.num_epochs):
                 break
 
             state = next_state
-        num_steps += (t-1)
+        num_steps += (t - 1)
         num_episodes += 1
 
         reward_batch.append(reward_sum)
@@ -302,17 +313,17 @@ for i_episode in range(args.num_epochs):
 
     rewards = expert_reward(states, actions)
     for idx in range(len(states)):
-        memory.push(states[idx][0], actions[idx], mem_mask[idx], mem_next[idx], \
+        memory.push(states[idx][0], actions[idx], mem_mask[idx], mem_next[idx],
                     rewards[idx][0])
     batch = memory.sample()
     update_params(batch)
 
-    ### update discriminator ###
+    # ### update discriminator ### #
     actions = torch.from_numpy(np.concatenate(actions))
     states = torch.from_numpy(np.concatenate(states))
-    
+
     idx = np.random.randint(0, expert_traj.shape[0], num_steps)
-    
+
     expert_state_action = expert_traj[idx, :]
     expert_pvalue = expert_conf[idx, :]
     expert_state_action = torch.Tensor(expert_state_action).to(device)
@@ -335,5 +346,11 @@ for i_episode in range(args.num_epochs):
     ############################
 
     if i_episode % args.log_interval == 0:
-        print('Episode {}\tAverage reward: {:.2f}\tMax reward: {:.2f}\tLoss (disc): {:.2f}'.format(i_episode, np.mean(reward_batch), max(reward_batch), disc_loss.item()))
+        print('Episode {}\tAverage reward: {:.2f}\tMax reward: {:.2f}\tLoss (disc): {:.2f}'.format(i_episode, np.mean(
+            reward_batch), max(reward_batch), disc_loss.item()))
 
+    if i_episode % args.save_interval == 0:
+        torch.save(policy_net, './networks/policy_net_{0}_epi{1}.pkl'.format(args.env, i_episode))
+        torch.save(value_net, './networks/value_net_{0}_epi{1}.pkl'.format(args.env, i_episode))
+        torch.save(discriminator, './networks/discriminator_{0}_epi{1}.pkl'.format(args.env, i_episode))
+        print('Network saved!')

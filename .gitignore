@@ -4,3 +4,4 @@ execute.sh
 output/
 __pycache__/
 networks*
+.idea/

@@ -129,7 +129,8 @@ def update_params(batch):
     advantages = (advantages - advantages.mean()) / advantages.std()
 
     action_means, action_log_stds, action_stds = policy_net(Variable(states.cpu()))
-    fixed_log_prob = normal_log_density(Variable(actions.cpu()), action_means, action_log_stds, action_stds).data.clone()
+    fixed_log_prob = \
+        normal_log_density(Variable(actions.cpu()), action_means, action_log_stds, action_stds).data.clone()
 
     def get_loss():
         action_means, action_log_stds, action_stds = policy_net(Variable(states.cpu()))

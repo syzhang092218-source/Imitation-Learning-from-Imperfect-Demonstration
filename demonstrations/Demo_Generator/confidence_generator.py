@@ -2,13 +2,17 @@ import numpy as np
 import argparse
 
 
-parser = argparse.ArgumentParser(description='PyTorch actor-critic example')
-parser.add_argument('--env-name', default="Humanoid-v2", metavar='G',
+env_name = 'BipedalWalkerHardcore-v3'
+truth = False
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--env-name', default=env_name, metavar='G',
                     help='name of the environment to run')
-parser.add_argument('--truth', action='store_true', default=False)
+parser.add_argument('--truth', action='store_true', default=truth)
 args = parser.parse_args()
 
-args.env_name = 'BipedalWalker-v3'
+env_name = args.env_name
+truth = args.truth
 
 rewards = np.load('./Demos/{}_rewards.npy'.format(args.env_name))
 

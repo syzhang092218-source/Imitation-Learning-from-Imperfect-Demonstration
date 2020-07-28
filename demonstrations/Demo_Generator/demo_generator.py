@@ -25,7 +25,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--render', action='store_true', default=False)
 parser.add_argument('-n', '--n-demos', help='number of demonstrations to generate', default=15000, type=int)
 parser.add_argument('--evaluate', action='store_true', default=False, help='evaluate the network or not')
-parser.add_argument('--env_name', default=env_name, help='env to run the model on')
+parser.add_argument('--env-name', default=env_name, help='env to run the model on')
 parser.add_argument('--alg', default=alg, help='algorithm to run')
 args = parser.parse_args()
 
